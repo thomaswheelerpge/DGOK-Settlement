@@ -1,0 +1,14 @@
+
+# Settlement Model
+
+```{r}
+
+library(tidyverse)
+library(dplyr)
+
+x <- 9
+
+y <- 10
+
+```
+
