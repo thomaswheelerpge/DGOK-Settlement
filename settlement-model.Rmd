@@ -1,14 +1,66 @@
 
 # Settlement Model
 
+## Overview
+
+This model is reconstructed from 2 Excel-based models which calculate daily payouts between PGE and DOPD
+
+### Import Dependencies
+
 ```{r}
 
 library(tidyverse)
 library(dplyr)
+library(openxlsx)
 
-x <- 9
+```
 
-y <- 10
+### Parameters Shared Across Both Models
+
+```{r}
+
+# Import 'Curves' sheet from within data.xlsx
+
+curves_data <- read.xlsx(xlsxFile = 'data.xlsx', sheet = 'Curves')
+
+# Rocky Reach Spill
+
+rrh_spill <- 0
+
+```
+
+
+### DOPD Model Parameters Only
+
+Note: These parameters are all currently being entered in manually, but could be pulled via a spreadsheet or function in the future
+
+```{r}
+
+# The day to run the DOPD model. This will determine what day of pricing for MIDC and POWERDEX will be pulled.
+
+flow_date <- as.POSIXct("10/12/2023", format = "%m/%d/%Y")
+
+# DOPD's share of Wells Dam
+
+dopd_wells_percentage <- 0.2778 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered
+
+# DOPD's share of Rocky Reach Dam
+
+dopd_rrh_percentage <- 0.0554 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered
+
+
+```
+
+
+### OKPD Model Parameters Only
+
+Note: These parameters are all currently being entered in manually, but could be pulled via a spreadsheet or function in the future
+
+```{r}
+
+# OKPD's share of Rocky Reach Dam
+
+okpd_rrh_percentage <- 0.0917 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered
 
 ```
 
