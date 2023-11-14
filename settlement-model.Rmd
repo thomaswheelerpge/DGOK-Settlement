@@ -1,27 +1,53 @@
+---
+output: 
+  html_document:
+    code_folding: hide
+    warning: FALSE
+---
 
-# Settlement Model
+# DOPD Settlement Model
 
 ## Overview
 
-This model is reconstructed from 2 Excel-based models which calculate daily payouts between PGE and DOPD
+This R script is a reconstruction of 2 Excel-based models which calculate daily payouts for PGE and DOPD in accordance with the XXX agreement.
 
-### Import Dependencies
+The goal of this script is to reduce the amount of human interaction needed to run the model in an effort to reduce time spent on the modeling task and prevent potential human error.
 
-```{r}
+This script will have a companion app where a user can enter parameters into an easy to use interface and run the model. The model can also be run directly here in R.
+
+## Section 1: Import libraries and model parameters
+
+#### Import libraries
+
+```{r, warning=FALSE, message=FALSE}
 
 library(tidyverse)
 library(dplyr)
-library(openxlsx)
+library(readxl)
 
 ```
 
-### Parameters Shared Across Both Models
+#### Import parameters shared across both models
 
 ```{r}
 
 # Import 'Curves' sheet from within data.xlsx
 
-curves_data <- read.xlsx(xlsxFile = 'data.xlsx', sheet = 'Curves')
+curves_data <- read_excel('data.xlsx', sheet = "Curves")
+
+# Import 'SHARES' sheet from within data.xlsx
+
+shares_data <- read_excel('data.xlsx', sheet = 'SHARES')
+
+# Import 'RTDATA' sheet from within data.xlsx
+
+rt_data <- read_excel('data.xlsx', sheet = 'RTDATA')
+
+```
+
+#### Manually enter parameters shared across both models
+
+```{r}
 
 # Rocky Reach Spill
 
@@ -30,37 +56,61 @@ rrh_spill <- 0
 ```
 
 
-### DOPD Model Parameters Only
-
-Note: These parameters are all currently being entered in manually, but could be pulled via a spreadsheet or function in the future
+#### Manually enter parameters that are unique to DOPD model
 
 ```{r}
 
 # The day to run the DOPD model. This will determine what day of pricing for MIDC and POWERDEX will be pulled.
+# Dashboard Question: What day do you want to run the DOPD model for?
 
-flow_date <- as.POSIXct("10/12/2023", format = "%m/%d/%Y")
+dopd_flow_date <- as.POSIXct("2023-10-12", format = "%Y-%m-%d")
 
-# DOPD's share of Wells Dam
+# DOPD's share of Wells Dam on DOPD model run day
 
-dopd_wells_percentage <- 0.2778 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered
+dopd_wells_percentage <- 0.2778 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered in the future if desired
 
-# DOPD's share of Rocky Reach Dam
+# DOPD's share of Rocky Reach Dam on DOPD model run day
 
-dopd_rrh_percentage <- 0.0554 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered
+dopd_rrh_percentage <- 0.0554 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered in the future if desired
 
 
 ```
 
 
-### OKPD Model Parameters Only
+#### Manually enter parameters that are unique to OKPD model
 
 Note: These parameters are all currently being entered in manually, but could be pulled via a spreadsheet or function in the future
 
 ```{r}
 
-# OKPD's share of Rocky Reach Dam
+# The day to run the OKPD model. This will determine what day of pricing for MIDC and POWERDEX will be pulled.
+# Dashboard Question: What day do you want to run the OKPD model for?
+
+okpd_flow_date <- as.POSIXct("2023-10-12", format = "%Y-%m-%d")
+
+# OKPD's share of Rocky Reach Dam on model run day
 
 okpd_rrh_percentage <- 0.0917 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered
 
 ```
+
+## Section 2: Run model
+
+```{r}
+
+# Create a dataframe to contain data for financial model with the first column named "Hour"
+
+df <- tibble(Hour = 1:24)
+
+########################################################################
+# NEED TO FIGURE OUT WHY DOPD_FLOW_DATE DOES NOT FILTER #
+########################################################################
+
+# Add MIDC ICE Price to df
+curves_data_filtered <- curves_data %>% filter(`Date` == dopd_flow_date) 
+
+df <- df
+
+```
+
 
