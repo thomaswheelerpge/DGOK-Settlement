@@ -53,7 +53,7 @@ rt_data <- read_excel('data.xlsx', sheet = 'RTDATA') %>%
 
 # Rocky Reach Spill
 
-rrh_spill <- 0
+rrh_spill <- 0 # MANUALLY ASSIGNED
 
 ```
 
@@ -65,15 +65,17 @@ rrh_spill <- 0
 # The day to run the DOPD model. This will determine what day of pricing for MIDC and POWERDEX will be pulled.
 # Dashboard Question: What day do you want to run the DOPD model for?
 
-dopd_flow_date <- as.Date("2023-10-12", format = "%Y-%m-%d")
+dopd_flow_date <- as.Date("2023-10-12", format = "%Y-%m-%d") # MANUALLY ASSIGNED
 
 # DOPD's share of Wells Dam on DOPD model run day
+# NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered in the future if desired
 
-dopd_wells_percentage <- 0.2778 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered in the future if desired
+dopd_wells_percentage <- 0.2778 # MANUALLY ASSIGNED
 
 # DOPD's share of Rocky Reach Dam on DOPD model run day
+# NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered in the future if desired
 
-dopd_rrh_percentage <- 0.0554 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered in the future if desired
+dopd_rrh_percentage <- 0.0554 # MANUALLY ASSIGNED
 
 
 ```
@@ -88,11 +90,12 @@ Note: These parameters are all currently being entered in manually, but could be
 # The day to run the OKPD model. This will determine what day of pricing for MIDC and POWERDEX will be pulled.
 # Dashboard Question: What day do you want to run the OKPD model for?
 
-okpd_flow_date <- as.Date("2023-10-12", format = "%Y-%m-%d")
+okpd_flow_date <- as.Date("2023-10-12", format = "%Y-%m-%d") # MANUALLY ASSIGNED
 
 # OKPD's share of Rocky Reach Dam on model run day
+# NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered
 
-okpd_rrh_percentage <- 0.0917 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES' sheet instead of manually entered
+okpd_rrh_percentage <- 0.0917 # MANUALLY ASSIGNED
 
 ```
 
@@ -154,7 +157,7 @@ rt_data_tidy <- rt_data %>%
 # Conditionally check to make sure rt_data_tidy has all of the needed values under the "accounts" column for the script to run. This will eliminate the need for conditional checks later on.
 # If any are missing, add them to the rt_data_tidy df and set values to 0. These will be needed later on for making calculations
 
-model_dependent_accounts <- c("WEL TOT CAP", "WELLS OBLIGATIONS NET SCHD", "forecast.wells.generation.min-mw", "PART_TOTAL_MAX_CAPACITY_MW-DGLS01", "PART_TOTAL_MIN_CAPACITY-DGLS01", "TOT DG LD MINUS URBN", "DG>OK LL", "DG>CHLN PAL LL", "DG>CHLN RR CEAEA", "BPA>DG PUMP", "DOPD NCW GEN", "AVA>DG LTI", "SENA>DG FRM")
+model_dependent_accounts <- c("WEL TOT CAP", "WELLS OBLIGATIONS NET SCHD", "forecast.wells.generation.min-mw", "PART_TOTAL_MAX_CAPACITY_MW-DGLS01", "PART_TOTAL_MIN_CAPACITY-DGLS01", "TOT DG LD MINUS URBN", "DG>OK LL", "DG>CHLN PAL LL", "DG>CHLN RR CEAEA", "BPA>DG PUMP", "DOPD NCW GEN", "AVA>DG LTI", "SENA>DG FRM", "INFLOW_MWH-DGLS01")
 
 # Check for missing accounts
 missing_accounts <- setdiff(model_dependent_accounts, rt_data_tidy$account)
@@ -221,7 +224,7 @@ df <- df %>% mutate(`Wells Min` = rt_data_wells_min$`Wells Min`)
 
 Corresponding Excel cells from DG PGE STLMNT that are created in this code chunk below -> C42:Z43
 
-NOTE: This code is essentially just doing a VLOOKUP and can be made more efficient by bulk transposing.
+EFFICIENCY NOTE: This code is essentially just doing a VLOOKUP and can be made more efficient by bulk transposing.
 
 ```{r}
 
@@ -263,7 +266,7 @@ df <- df %>% mutate(Load = rt_data_load$Load)
 
 Corresponding Excel cells from DG PGE STLMNT that are created in this code chunk below -> C45:Z47
 
-NOTE: This code is essentially just doing a VLOOKUP and can be made more efficient by bulk transposing.
+EFFICIENCY NOTE: This code is essentially just doing a VLOOKUP and can be made more efficient by bulk transposing.
 
 ```{r}
 
@@ -304,3 +307,62 @@ df <- df %>% mutate(`Purchases w/ Reserves` = rt_data_purchases_w_reserves$`Purc
 
 ```
 
+#### Add Purchase for Capacity & Purchase w/o Reserves
+
+EFFICIENCY NOTE: These values can be moved to the top of the script for the user to manually assign. They were added here for 
+
+```{r}
+
+#
+purchase_for_capacity <- 0 # MANUALLY ASSIGNED
+  
+purchase_w_o_reserves <- 0 # MANUALLY ASSIGNED
+
+df <- df %>% 
+  mutate(`Purchase for Capacity` = 0, `Purchases w/o Reserves` = 0)
+
+```
+
+#### Calculate Net Load
+
+```{r}
+# Add Net Load column to 
+df <- df %>% mutate(`Net Load` = Load + `RRH CEAEA` + `Pumping Return` + `9Canyon` + `Purchases w/ Reserves` + `Purchase for Capacity` + `Purchases w/o Reserves`)
+```
+
+#### Calculate RRH Gen
+
+```{r}
+
+# Extract Rocky Reach Inflow from RTDATA Tab
+
+rrh_inflow <- 60 rt_data_filter("INFLOW_MWH-DGLS01") %>% select(Value) %>% sum()
+
+# Distribute RRH Gen in accordance with the following logic
+# The maximum amount of total generation (rrh_inflow) should be sold during HL hours 7-22
+# The amount sold in an individual hour cannot exceed RRH Max for that hour
+# The amount sold during each hour should be equal across the 16 hr HL block
+
+
+
+df <- df %>%
+  mutate(
+    # Calculate values for HL hours (7-22)
+    `RRH Gen` = ifelse(Hour >= 7 & Hour <= 22,
+                     pmin(min(`RRH Max`), ifelse(rrh_inflow/16 < `RRH Min`, `RRH Min`, rrh_inflow/16)),
+                     0),
+    rrh_inflow_leftover = rrh_inflow - sum(`RRH Gen`[7:22]),
+    `RRH Gen` = ifelse(Hour %in% c(1:6, 23:24),
+                     ifelse(Hour %in% c(1:6, 23:24) & rrh_inflow_leftover > 0,
+                            rrh_inflow_leftover / sum(Hour %in% c(1:6, 23:24)),
+                            0),
+                     `RRH Gen`)
+  )
+
+df <- df %>%
+  mutate(
+    #
+    `RRH Gen` = ifelse(`RRH Gen` < `RRH Min`, `RRH Min`, `RRH Gen`)
+  )
+
+```
