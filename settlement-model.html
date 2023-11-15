@@ -445,8 +445,8 @@ display: none;
 <div id="overview" class="section level2">
 <h2>Overview</h2>
 <p>This R script is a reconstruction of 2 Excel-based models which
-calculate daily payouts PGE and DOPD in accordance with their dam
-agreements.</p>
+calculate daily payouts for PGE and DOPD in accordance with the XXX
+agreement.</p>
 <p>The goal of this script is to reduce the amount of human interaction
 needed to run the model in an effort to reduce time spent on the
 modeling task and prevent potential human error.</p>
@@ -460,21 +460,22 @@ can also be run directly here in R.</p>
 <h4>Import libraries</h4>
 <pre class="r"><code>library(tidyverse)
 library(dplyr)
-library(openxlsx)</code></pre>
+library(readxl)</code></pre>
 </div>
 <div id="import-parameters-shared-across-both-models" class="section level4">
 <h4>Import parameters shared across both models</h4>
 <pre class="r"><code># Import &#39;Curves&#39; sheet from within data.xlsx
 
-curves_data &lt;- read.xlsx(xlsxFile = &#39;data.xlsx&#39;, sheet = &#39;Curves&#39;)
+curves_data &lt;- read_excel(&#39;data.xlsx&#39;, sheet = &quot;Curves&quot;) %&gt;%
+  mutate(Date = as.Date(Date, format = &quot;%Y-%m-%d&quot;))
 
 # Import &#39;SHARES&#39; sheet from within data.xlsx
 
-shares_data &lt;- read.xlsx(xlsxFile = &#39;data.xlsx&#39;, sheet = &#39;SHARES&#39;)
+shares_data &lt;- read_excel(&#39;data.xlsx&#39;, sheet = &#39;SHARES&#39;)
 
 # Import &#39;RTDATA&#39; sheet from within data.xlsx
 
-rt_data &lt;- read.xlsx(xlsxFile = &#39;data.xlsx&#39;, sheet = &#39;RTDATA&#39;)</code></pre>
+rt_data &lt;- read_excel(&#39;data.xlsx&#39;, sheet = &#39;RTDATA&#39;)</code></pre>
 </div>
 <div id="manually-enter-parameters-shared-across-both-models" class="section level4">
 <h4>Manually enter parameters shared across both models</h4>
@@ -487,7 +488,7 @@ rrh_spill &lt;- 0</code></pre>
 <pre class="r"><code># The day to run the DOPD model. This will determine what day of pricing for MIDC and POWERDEX will be pulled.
 # Dashboard Question: What day do you want to run the DOPD model for?
 
-dopd_flow_date &lt;- as.POSIXct(&quot;10/12/2023&quot;, format = &quot;%m/%d/%Y&quot;)
+dopd_flow_date &lt;- as.Date(&quot;2023-10-12&quot;, format = &quot;%Y-%m-%d&quot;)
 
 # DOPD&#39;s share of Wells Dam on DOPD model run day
 
@@ -504,11 +505,133 @@ but could be pulled via a spreadsheet or function in the future</p>
 <pre class="r"><code># The day to run the OKPD model. This will determine what day of pricing for MIDC and POWERDEX will be pulled.
 # Dashboard Question: What day do you want to run the OKPD model for?
 
-okpd_flow_date &lt;- as.POSIXct(&quot;10/12/2023&quot;, format = &quot;%m/%d/%Y&quot;)
+okpd_flow_date &lt;- as.Date(&quot;2023-10-12&quot;, format = &quot;%Y-%m-%d&quot;)
 
 # OKPD&#39;s share of Rocky Reach Dam on model run day
 
 okpd_rrh_percentage &lt;- 0.0917 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM &#39;SHARES&#39; sheet instead of manually entered</code></pre>
+</div>
+</div>
+<div id="section-2-run-model" class="section level2">
+<h2>Section 2: Run model</h2>
+<div id="set-up-main-dataframe" class="section level4">
+<h4>Set up main dataframe</h4>
+<p>Set up the main data frame that will be used to calculate the final
+settlement value and begin by adding in Hours 1 through 24 as well as
+the MIDC ICE &amp; POWERDEX Prices.</p>
+<p>Corresponding Excel cells from DG PGE STLMNT that are created in this
+code chunk below -&gt; C36:Z38</p>
+<pre class="r"><code># Filter curves_data to extract MIDC ICE and POWERDEX Prices
+
+curves_data_filtered &lt;- curves_data %&gt;% filter(Date == dopd_flow_date)
+
+# Create main dataframe for housing model outputs
+
+df &lt;- tibble(
+  Hour = 1:24,
+  `MIDC ICE Price` = curves_data_filtered$`ICE DA MidC`,
+  POWERDEX = curves_data_filtered$`Powerdex MidC`
+)</code></pre>
+</div>
+<div id="build-helper-functions" class="section level4">
+<h4>Build helper functions</h4>
+<p>There are certain lines of code repeated multiple times throughout
+the script. This helper function can be used (called) in the future to
+avoid rewriting code multiple times. This improves readability of the
+script and efficiency.</p>
+<pre class="r"><code>rt_data_filter &lt;- function (category) {
+  rt_data_tidy %&gt;% filter(account == category)
+}</code></pre>
+</div>
+<div id="restructure-rtdata-for-easier-querying." class="section level4">
+<h4>Restructure RTDATA for easier querying.</h4>
+<p>The way the data in the RTDATA sheet is organized is easy to work
+with in Excel, but present some challenges for efficient querying in R.
+This code chunk below restructures RTDATA for easier querying as we will
+need to pull from it multiple times in subsequent sections.</p>
+<pre class="r"><code>##########################
+### Tidy RTDATA Sheet ####
+##########################
+
+# Create easy-to-query (i.e. &quot;tidy&quot; in R-speak) dataframe
+rt_data_tidy &lt;- rt_data %&gt;%
+  # Move row value into one column for easier querying
+  pivot_longer(cols = 3:ncol(rt_data), names_to = &quot;Hour&quot;, values_to = &quot;Value&quot;) %&gt;% 
+  # Convert hourly string values to numeric
+  mutate(Hour = as.numeric(sub(&quot;^HE&quot;, &quot;&quot;, Hour)))  %&gt;%
+  # Drop any NA values in the Hour column (These are the &quot;Day Total&quot; values)
+  filter(!is.na(Hour))</code></pre>
+<pre><code>## Warning: There was 1 warning in `mutate()`.
+## ℹ In argument: `Hour = as.numeric(sub(&quot;^HE&quot;, &quot;&quot;, Hour))`.
+## Caused by warning:
+## ! NAs introduced by coercion</code></pre>
+</div>
+<div id="calculate-wells-max-values" class="section level4">
+<h4>Calculate Wells Max Values</h4>
+<p>Calculate Wells Max values following formula from Excel (= DOPD’s
+percentage of Wells * (WEL TOT CAP - WELLS OBLIGATION NET SCHD))</p>
+<p>Corresponding Excel cells from DG PGE STLMNT that are created in this
+code chunk below -&gt; C39:Z39</p>
+<pre class="r"><code>rt_data_wel_tot_cap &lt;- rt_data_filter(&quot;WEL TOT CAP&quot;)
+
+rt_data_wells_obligations_net_schd &lt;- rt_data_filter(&quot;WELLS OBLIGATIONS NET SCHD&quot;)
+
+rt_data_wells_max &lt;- 
+  # Join WEL TOT CAP and WELLS OBLIGATIONS NET SCHD by Hour
+  left_join(rt_data_wel_tot_cap, rt_data_wells_obligations_net_schd, by = &quot;Hour&quot;) %&gt;% 
+  # Calculate Wells Max (= DOPD&#39;s percentage of Wells * (WEL TOT CAP - WELLS OBLIGATION NET SCHD))
+  # NOTE: Values are conditionally checked to be set to zero of values are less than or equal to 0
+  mutate(`Wells Max` = dopd_wells_percentage * 
+           (ifelse(Value.x &lt;= 0, 0, Value.x) - ifelse(Value.y &lt;= 0, 0, Value.y)))
+
+# Add Wells Max values to the main df
+df &lt;- df %&gt;% mutate(`Wells Max` = rt_data_wells_max$`Wells Max`)</code></pre>
+</div>
+<div id="calculate-wells-min-values" class="section level4">
+<h4>Calculate Wells Min Values</h4>
+<p>Calculate Wells Min values following formula from Excel (= DOPD’s
+percentage of Wells * (forecast.wells.generation.min-m - WELLS
+OBLIGATION NET SCHD))</p>
+<p>Corresponding Excel cells from DG PGE STLMNT that are created in this
+code chunk below -&gt; C41:Z41</p>
+<pre class="r"><code>rt_data_forecast_wells_generation_min_mw &lt;- rt_data_filter(&quot;forecast.wells.generation.min-mw&quot;)
+
+rt_data_wells_min &lt;- 
+  # Join forecast.wells.generation.min-m and WELLS OBLIGATIONS NET SCHD by Hour
+  left_join(rt_data_forecast_wells_generation_min_mw, rt_data_wells_obligations_net_schd, by = &quot;Hour&quot;) %&gt;% 
+  # Calculate Wells Min (= DOPD&#39;s percentage of Wells * (forecast.wells.generation.min-m - WELLS OBLIGATION NET SCHD))
+  # NOTE: Values are conditionally checked to be set to zero of values are less than or equal to 0
+  mutate(`Wells Min` = dopd_wells_percentage * 
+           (ifelse(Value.x &lt;= 0, 0, Value.x) - ifelse(Value.y &lt;= 0, 0, Value.y)))
+
+# Add Wells Min values to the main df
+df &lt;- df %&gt;% mutate(`Wells Min` = rt_data_wells_min$`Wells Min`)</code></pre>
+</div>
+<div id="calculate-rrh-max-rrh-min" class="section level4">
+<h4>Calculate RRH Max &amp; RRH Min</h4>
+<p>Corresponding Excel cells from DG PGE STLMNT that are created in this
+code chunk below -&gt; C42:Z43</p>
+<pre class="r"><code>#Filter rt_data_tidy by PART_TOTAL_MIN_CAPACITY-DGLS01
+rt_data_part_total_max_capacity &lt;- rt_data_filter(&quot;PART_TOTAL_MAX_CAPACITY_MW-DGLS01&quot;)
+
+#Filter rt_data_tidy by PART_TOTAL_MIN_CAPACITY-DGLS01
+rt_data_part_total_min_capacity &lt;- rt_data_filter(&quot;PART_TOTAL_MIN_CAPACITY-DGLS01&quot;)
+
+# Add RRH Max values to the main df
+df &lt;- df %&gt;% mutate(`RRH Max` = rt_data_part_total_max_capacity$`Value`, 
+                    `RRH Min` = rt_data_part_total_min_capacity$`Value`)</code></pre>
+</div>
+<div id="calculate-load" class="section level4">
+<h4>Calculate Load</h4>
+<pre class="r"><code>#Filter rt_data_tidy by PART_TOTAL_MIN_CAPACITY-DGLS01
+rt_data_part_total_max_capacity &lt;- rt_data_filter(&quot;PART_TOTAL_MAX_CAPACITY_MW-DGLS01&quot;)
+
+#Filter rt_data_tidy by PART_TOTAL_MIN_CAPACITY-DGLS01
+rt_data_part_total_min_capacity &lt;- rt_data_filter(&quot;PART_TOTAL_MIN_CAPACITY-DGLS01&quot;)
+
+# Add RRH Max values to the main df
+df &lt;- df %&gt;% mutate(`RRH Max` = rt_data_part_total_max_capacity$`Value`, 
+                    `RRH Min` = rt_data_part_total_min_capacity$`Value`)</code></pre>
 </div>
 </div>
 </div>

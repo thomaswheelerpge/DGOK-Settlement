@@ -42,7 +42,8 @@ shares_data <- read_excel('data.xlsx', sheet = 'SHARES')
 
 # Import 'RTDATA' sheet from within data.xlsx
 
-rt_data <- read_excel('data.xlsx', sheet = 'RTDATA')
+rt_data <- read_excel('data.xlsx', sheet = 'RTDATA') %>%
+  mutate(time = as.Date(time, format = "%Y-%m-%d"))
 
 ```
 
@@ -97,9 +98,9 @@ okpd_rrh_percentage <- 0.0917 # NOTE: CAN BE PULLED IN VIA VLOOKUP FROM 'SHARES'
 
 ## Section 2: Run model
 
-#### Set up model dataframe
+#### Set up main dataframe
 
-Explained plainly: In this code chunk we are setting up the main data frame that will be used to calculate the final settlement value and begin by adding in Hours 1 through 24 as well as the MIDC ICE & POWERDEX Prices. 
+Set up the main data frame that will be used to calculate the final settlement value and begin by adding in Hours 1 through 24 as well as the MIDC ICE & POWERDEX Prices. 
 
 Corresponding Excel cells from DG PGE STLMNT that are created in this code chunk below -> C36:Z38
 
@@ -119,10 +120,29 @@ df <- tibble(
 
 ```
 
-#### Calculate Wells Max Values
+#### Build helper functions
+
+There are certain lines of code repeated multiple times throughout the script. This helper function can be used (called) in the future to avoid rewriting code multiple times. This improves readability of the script and efficiency.
 
 ```{r}
 
+rt_data_filter <- function (category) {
+  rt_data_tidy %>% filter(account == category)
+}
+
+```
+
+#### Restructure RTDATA for easier querying.
+
+The way the data in the RTDATA sheet is organized is easy to work with in Excel, but present some challenges for efficient querying in R. This code chunk below restructures RTDATA for easier querying as we will need to pull from it multiple times in subsequent sections.
+
+```{r, warning=FALSE}
+
+##########################
+### Tidy RTDATA Sheet ####
+##########################
+
+# Create easy-to-query (i.e. "tidy" in R-speak) dataframe
 rt_data_tidy <- rt_data %>%
   # Move row value into one column for easier querying
   pivot_longer(cols = 3:ncol(rt_data), names_to = "Hour", values_to = "Value") %>% 
@@ -131,21 +151,48 @@ rt_data_tidy <- rt_data %>%
   # Drop any NA values in the Hour column (These are the "Day Total" values)
   filter(!is.na(Hour))
 
-rt_data_wel_tot_cap <- rt_data_tidy %>% 
-  # Filter by WEL TOT CAP
-  filter(account == "WEL TOT CAP")
+# Conditionally check to make sure rt_data_tidy has all of the needed values under the "accounts" column for the script to run. This will eliminate the need for conditional checks later on.
+# If any are missing, add them to the rt_data_tidy df and set values to 0. These will be needed later on for making calculations
 
-rt_data_wells_obligations_net_schd <- rt_data_tidy %>% 
-  # Filter by WELLS OBLIGATIONS NET SCHD
-  filter(account == "WELLS OBLIGATIONS NET SCHD")
+model_dependent_accounts <- c("WEL TOT CAP", "WELLS OBLIGATIONS NET SCHD", "forecast.wells.generation.min-mw", "PART_TOTAL_MAX_CAPACITY_MW-DGLS01", "PART_TOTAL_MIN_CAPACITY-DGLS01", "TOT DG LD MINUS URBN", "DG>OK LL", "DG>CHLN PAL LL", "DG>CHLN RR CEAEA", "BPA>DG PUMP", "DOPD NCW GEN", "AVA>DG LTI", "SENA>DG FRM")
+
+# Check for missing accounts
+missing_accounts <- setdiff(model_dependent_accounts, rt_data_tidy$account)
+
+# Loop through missing accounts
+for (account in missing_accounts) {
+  # Create a tibble with 24 rows for the missing account
+  missing_data <- tibble(
+    time = rep(dopd_flow_date, each = 24),
+    account = rep(account, each = 24),
+    Hour = 1:24,
+    Value = rep(0, times = 24)
+  )
+  
+  # Bind the missing data to rt_tidy_data
+  rt_data_tidy <- bind_rows(rt_data_tidy, missing_data)
+}
+
+```
+
+
+#### Calculate Wells Max Values
+
+Calculate Wells Max values following formula from Excel (= DOPD's percentage of Wells * (WEL TOT CAP - WELLS OBLIGATION NET SCHD))
+
+Corresponding Excel cells from DG PGE STLMNT that are created in this code chunk below -> C39:Z39
+
+```{r}
+
+rt_data_wel_tot_cap <- rt_data_filter("WEL TOT CAP")
+
+rt_data_wells_obligations_net_schd <- rt_data_filter("WELLS OBLIGATIONS NET SCHD")
 
 rt_data_wells_max <- 
   # Join WEL TOT CAP and WELLS OBLIGATIONS NET SCHD by Hour
   left_join(rt_data_wel_tot_cap, rt_data_wells_obligations_net_schd, by = "Hour") %>% 
   # Calculate Wells Max (= DOPD's percentage of Wells * (WEL TOT CAP - WELLS OBLIGATION NET SCHD))
-  # NOTE: Values are conditionally checked to be set to zero of values are less than or equal to 0
-  mutate(`Wells Max` = dopd_wells_percentage * 
-           (ifelse(Value.x <= 0, 0, Value.x) - ifelse(Value.y <= 0, 0, Value.y)))
+  mutate(`Wells Max` = dopd_wells_percentage * (Value.x - Value.y))
 
 # Add Wells Max values to the main df
 df <- df %>% mutate(`Wells Max` = rt_data_wells_max$`Wells Max`)
@@ -153,27 +200,107 @@ df <- df %>% mutate(`Wells Max` = rt_data_wells_max$`Wells Max`)
 
 #### Calculate Wells Min Values
 
+Calculate Wells Min values following formula from Excel (= DOPD's percentage of Wells * (forecast.wells.generation.min-m - WELLS OBLIGATION NET SCHD))
+
+Corresponding Excel cells from DG PGE STLMNT that are created in this code chunk below -> C41:Z41
+
 ```{r}
-rt_data_forecast_wells_generation_min_mw <- rt_data_tidy %>% 
-  # Filter by forecast.wells.generation.min-m
-  filter(account == "forecast.wells.generation.min-mw")
+rt_data_forecast_wells_generation_min_mw <- rt_data_filter("forecast.wells.generation.min-mw")
 
 rt_data_wells_min <- 
   # Join forecast.wells.generation.min-m and WELLS OBLIGATIONS NET SCHD by Hour
   left_join(rt_data_forecast_wells_generation_min_mw, rt_data_wells_obligations_net_schd, by = "Hour") %>% 
-  # Calculate Wells Min (= DOPD's percentage of Wells * (forecast.wells.generation.min-m - WELLS OBLIGATION NET SCHD))
-  # NOTE: Values are conditionally checked to be set to zero of values are less than or equal to 0
-  mutate(`Wells Min` = dopd_wells_percentage * 
-           (ifelse(Value.x <= 0, 0, Value.x) - ifelse(Value.y <= 0, 0, Value.y)))
+  # Calculate Wells Min (= DOPD's percentage of Wells * (forecast.wells.generation.min-mw - WELLS OBLIGATION NET SCHD))
+  mutate(`Wells Min` = dopd_wells_percentage * (Value.x - Value.y))
 
 # Add Wells Min values to the main df
 df <- df %>% mutate(`Wells Min` = rt_data_wells_min$`Wells Min`)
 ```
 
-#### Calculate RRH Max
+#### Add RRH Max & RRH Min to main df
+
+Corresponding Excel cells from DG PGE STLMNT that are created in this code chunk below -> C42:Z43
+
+NOTE: This code is essentially just doing a VLOOKUP and can be made more efficient by bulk transposing.
 
 ```{r}
-rt_data_part_total_max_capacity <- rt_data_tidy %>% filter(account == "PART_TOTAL_MAX_CAPACITY_MW-DGLS01")
+
+#Filter rt_data_tidy by PART_TOTAL_MIN_CAPACITY-DGLS01
+rt_data_part_total_max_capacity <- rt_data_filter("PART_TOTAL_MAX_CAPACITY_MW-DGLS01")
+
+#Filter rt_data_tidy by PART_TOTAL_MIN_CAPACITY-DGLS01
+rt_data_part_total_min_capacity <- rt_data_filter("PART_TOTAL_MIN_CAPACITY-DGLS01")
+
+# Add RRH Max values to the main df
+df <- df %>% mutate(`RRH Max` = rt_data_part_total_max_capacity$`Value`, 
+                    `RRH Min` = rt_data_part_total_min_capacity$`Value`)
 ```
 
+#### Calculate Load
+
+```{r}
+
+#Filter rt_data_tidy by TOT DG LD MINUS URB
+rt_data_tot_dg_ld_minus_urbn <- rt_data_filter("TOT DG LD MINUS URBN")
+
+#Filter rt_data_tidy by DG>OK LL
+rt_data_dg_ok_ll <- rt_data_filter("DG>OK LL")
+
+# Filter rt_data_tidy by DG>CHLN PAL LL
+rt_data_dg_chln_pal_ll <- rt_data_filter("DG>CHLN PAL LL")
+
+# Merge TOT DG LD MINUS URB, DG>OK LL, DG>CHLN PAL LL into one df and add together to calculate Load
+rt_data_load <- rt_data_tot_dg_ld_minus_urbn %>%
+  left_join(rt_data_dg_ok_ll, by = "Hour") %>%
+  left_join(rt_data_dg_chln_pal_ll, by = "Hour") %>% 
+  mutate(Load = Value.x + Value.y + Value)
+
+# Add RRH Max values to the main df
+df <- df %>% mutate(Load = rt_data_load$Load)
+```
+
+#### Add RRH CEAEA, Pumping Return, 9Canyon
+
+Corresponding Excel cells from DG PGE STLMNT that are created in this code chunk below -> C45:Z47
+
+NOTE: This code is essentially just doing a VLOOKUP and can be made more efficient by bulk transposing.
+
+```{r}
+
+#Filter rt_data_tidy by DG>CHLN RR CEAEA
+rt_data_dg_chln_rr_ceaea <- rt_data_filter("DG>CHLN RR CEAEA")
+
+#Filter rt_data_tidy by BPA>DG PUMP
+rt_data_bpa_dg_pump <- rt_data_filter("BPA>DG PUMP")
+
+#Filter rt_data_tidy by DOPD NCW GEN
+rt_data_dopd_ncw_gen <- rt_data_filter("DOPD NCW GEN") %>% 
+  mutate(Value = Value * -1)
+
+# Add RRH Max values to the main df
+df <- df %>% mutate(`RRH CEAEA` = rt_data_dg_chln_rr_ceaea$`Value`, 
+                    `Pumping Return` = rt_data_bpa_dg_pump$`Value`,
+                    `9Canyon` = rt_data_dopd_ncw_gen$`Value`)
+```
+
+#### Calculate Purchases with Reserves
+
+```{r}
+
+#Filter rt_data_tidy by AVA>DG LTI
+rt_data_ava_dg_lti <- rt_data_filter("AVA>DG LTI")
+
+#Filter rt_data_tidy by SENA>DG FRM
+rt_data_sena_dg_frm <- rt_data_filter("SENA>DG FRM")
+
+rt_data_purchases_w_reserves <- 
+  # Join forecast.wells.generation.min-m and WELLS OBLIGATIONS NET SCHD by Hour
+  left_join(rt_data_ava_dg_lti, rt_data_sena_dg_frm, by = "Hour") %>% 
+  # Calculate Purchases w/ Reserves (= AVA>DG LTI + SENA>DG FRM)
+  mutate(`Purchases w/ Reserves` = Value.x - Value.y)
+
+# Add Purchases w/ Reserves values to the main df
+df <- df %>% mutate(`Purchases w/ Reserves` = rt_data_purchases_w_reserves$`Purchases w/ Reserves`)
+
+```
 
