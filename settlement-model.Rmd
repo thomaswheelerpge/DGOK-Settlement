@@ -15,6 +15,10 @@ The goal of this script is to reduce the amount of human interaction needed to r
 
 This script will have a companion app where a user can enter parameters into an easy to use interface and run the model. The model can also be run directly here in R.
 
+## Notes for developer
+
+Throughout this Rmd there is code that has # MANUALLY ASSIGNED written next to it. These are values that the user will input in manually through the dashboard
+
 ## Section 1: Import libraries and model parameters
 
 #### Import libraries
@@ -54,6 +58,10 @@ rt_data <- read_excel('data.xlsx', sheet = 'RTDATA') %>%
 # Rocky Reach Spill
 
 rrh_spill <- 0 # MANUALLY ASSIGNED
+
+# User selects if today is a trading holiday
+
+is_today_a_trading_holiday <- FALSE # MANUALLY ASSIGNED. Another option would be for the script to decide if it was a holiday, to do that, we'd need a list of all holidays without a year assigned to them
 
 ```
 
@@ -336,33 +344,102 @@ df <- df %>% mutate(`Net Load` = Load + `RRH CEAEA` + `Pumping Return` + `9Canyo
 
 # Extract Rocky Reach Inflow from RTDATA Tab
 
-rrh_inflow <- 60 rt_data_filter("INFLOW_MWH-DGLS01") %>% select(Value) %>% sum()
+rrh_inflow <- 2500 #rt_data_filter("INFLOW_MWH-DGLS01") %>% select(Value) %>% sum()
 
-# Distribute RRH Gen in accordance with the following logic
-# The maximum amount of total generation (rrh_inflow) should be sold during HL hours 7-22
-# The amount sold in an individual hour cannot exceed RRH Max for that hour
-# The amount sold during each hour should be equal across the 16 hr HL block
+# Distribute RRH Gen in accordance with the following logic:
+# 1. Check if day is weekday/Saturday or Sunday/holiday. If weekday/Saturday, HL and LL will be the same value
+# 2. The maximum amount of total generation (rrh_inflow) should be sold during HL hours 7-22
+# 3. The amount sold in an individual hour cannot exceed RRH Max for that hour
+# 4. The amount sold during each hour should be equal across the 16 hr HL block
 
+# Step 1: Check day of the week
 
+# Check if the day is a Sunday or a Holiday
+day_of_week <- weekdays(dopd_flow_date)
 
-df <- df %>%
-  mutate(
+if (day_of_week == "Sunday" | is_today_a_trading_holiday == TRUE) {
+
+  # Distribute generation equally across all 24 hours of day
+  df <- df %>% 
+    mutate(`RRH Gen` = rrh_inflow/24)
+  
+} else {
+  
+  # If not a Sunday or Holiday, there are 3 possible scenarios for the distribution
+  
+  # 1. Low inflow: All values are RRH Min
+  # 2. Medium inflow: HL values are above their respective RRH Min values, LL values are RRH Min
+  # 3. High inflow: All values are above RRH Min
+  
+  # Distribute generation across HL hours first. This first step will overcalculate how much RRH Gen will be for these hours. 
+  df <- df %>%
+    
     # Calculate values for HL hours (7-22)
-    `RRH Gen` = ifelse(Hour >= 7 & Hour <= 22,
-                     pmin(min(`RRH Max`), ifelse(rrh_inflow/16 < `RRH Min`, `RRH Min`, rrh_inflow/16)),
-                     0),
-    rrh_inflow_leftover = rrh_inflow - sum(`RRH Gen`[7:22]),
-    `RRH Gen` = ifelse(Hour %in% c(1:6, 23:24),
-                     ifelse(Hour %in% c(1:6, 23:24) & rrh_inflow_leftover > 0,
-                            rrh_inflow_leftover / sum(Hour %in% c(1:6, 23:24)),
-                            0),
-                     `RRH Gen`)
-  )
+    mutate(
+      
+      # Conditionally check if the current row being assessed is between the hours of 7 and 22, inclusive
+      `RRH Gen` = ifelse(Hour >= 7 & Hour <= 22,
+                      
+                       # If TRUE, make the value for that row RRH Max for that hour or total inflow 
+                       # divided by 16, whichever is smaller. If FALSE, set value to 0, will be updated later
+                       min(min(`RRH Max`), ifelse(rrh_inflow/16 < `RRH Min`, `RRH Min`, rrh_inflow/16)), 0
+                       
+                       )
+          )
+    
+    # Find how much inflow is left over after this calculation
+    rrh_inflow_leftover = rrh_inflow - sum(df$`RRH Gen`[7:22])
+    
+    # If there is none leftover, we'll need to subtract the total amount of RRH Min needed 
+    # to meet the need of hours 1:6 and 23:24 from hours 7:22
+    
+    if(rrh_inflow_leftover == 0) {
+      
+      #######################################################
+      ####### THIS IS A LOW OR MEDIUM INFLOW SCENARIO #######
+      #######################################################
+      
+      # Step 1: Assign Hours 1:6 and 23:24 to be the same as RRH Min
+      df <- df %>%
+              mutate(    
+                `RRH Gen` = ifelse(Hour %in% c(1:6, 23:24), `RRH Min`, `RRH Gen`)
+              )
+      
+      # Step 2: Find the sum of hours 1:6 and 23:24 RRH Min (now in RRH Gen)
+      sum_RRH_LL_hrs <- sum(df$`RRH Gen`[c(1:6, 23:24)])
+      
+      # Step 3: Subtract the sum of the RHH LL hrs/16 from each RRH gen value during hours 7:22
+      df <- df %>%
+              mutate(    
+                `RRH Gen` = ifelse(Hour >= 7 & Hour <= 22, `RRH Gen` - sum_RRH_LL_hrs/16, `RRH Gen`)
+              )
+      
+      # Step 4: Check to make sure the updated RRH Gen value is now not less than RRH Min. If it is, change it to RRH Min
+      df <- df %>%
+              mutate(    
+                `RRH Gen` = ifelse(Hour >= 7 & Hour <= 22, ifelse(`RRH Gen` < `RRH Min`, `RRH Min`, `RRH Gen`), `RRH Gen`)
+              )
+    
+  } else {
+    
+    ##############################################
+    ####### THIS IS A HIGH INFLOW SCENARIO #######
+    ##############################################
+    
+    df <- df %>%
+    mutate(    
+      
+      # First check that hour in the day is 1:6 or 23:24
+      `RRH Gen` = ifelse(Hour %in% c(1:6, 23:24), 
+                        
+                        # If TRUE, assign value for that row to be the leftover inflow of RRH / 8 or
+                        # The lowest value of all that RRH Max values for that time window
+                        min(rrh_inflow_leftover / 8, min(c(df$`RRH Max`[1:6], df$`RRH Max`[23:24]))), `RRH Gen`)
+    )
+  }
+  
+}
 
-df <- df %>%
-  mutate(
-    #
-    `RRH Gen` = ifelse(`RRH Gen` < `RRH Min`, `RRH Min`, `RRH Gen`)
-  )
+print(sum(df$`RRH Gen`))
 
 ```
