@@ -9,15 +9,25 @@ output:
 
 ## Overview
 
-This R script is a reconstruction of 2 Excel-based models which calculate daily payouts for PGE and DOPD in accordance with the XXX agreement.
+This R script is a reconstruction of 2 Excel-based models which calculate daily payouts for PGE and DO/OKPD in accordance with the XXX agreement.
 
-The goal of this script is to reduce the amount of human interaction needed to run the model in an effort to reduce time spent on the modeling task and prevent potential human error.
+This script aims to reduce the amount of human interaction needed to run the model with the ultimate goals being (1) a reduction in time spent on the modeling task and (2) preventing potential human error.
 
-This script will have a companion app where a user can enter parameters into an easy to use interface and run the model. The model can also be run directly here in R.
+This script will have an R Shiny app built on top of it which will enable a user to enter parameters into an easy to use interface and run the model. The model can also be run directly here in R.
+
+## Data
+
+The data used for this model is drawn from data.xlsx. This spreadsheet has the same structure as the original modeling spreadsheet (which has gone through multiple name iterations - Jane will know what the latest version is).
 
 ## Notes for developer
 
-Throughout this Rmd there is code that has # MANUALLY ASSIGNED written next to it. These are values that the user will input in manually through the dashboard
+Throughout this Rmd there is code that has # MANUALLY ASSIGNED written next to it. These are values that the user will input in manually through the dashboard and will need to have controls on the UI to collect these values.
+
+Remove no longer needed sheets (DG PGE STLMNT, OK PGE STLMNT) from data.xlsx
+
+Make sure model_dependent_accounts vector has ALL possible category names to avoid the script erroring
+
+To add: After user uploads of Excel document, have an initial conditional check to make sure sheet names and column names are correct before even allowing the user to proceed with running to model. Main goal is to mitigate data integration risk (main risk by using an R Script vs. running this script in Excel)
 
 ## Section 1: Import libraries and model parameters
 
@@ -25,9 +35,9 @@ Throughout this Rmd there is code that has # MANUALLY ASSIGNED written next to i
 
 ```{r, warning=FALSE, message=FALSE}
 
-library(tidyverse)
-library(dplyr)
-library(readxl)
+library(tidyverse) # General data wrangling
+library(dplyr) # General data wrangling
+library(readxl) # Import Excel
 
 ```
 
@@ -38,6 +48,8 @@ library(readxl)
 # Import 'Curves' sheet from within data.xlsx
 
 curves_data <- read_excel('data.xlsx', sheet = "Curves") %>%
+  
+  # Assign column named "Date" to be Date value types.
   mutate(Date = as.Date(Date, format = "%Y-%m-%d"))
 
 # Import 'SHARES' sheet from within data.xlsx
@@ -47,11 +59,18 @@ shares_data <- read_excel('data.xlsx', sheet = 'SHARES')
 # Import 'RTDATA' sheet from within data.xlsx
 
 rt_data <- read_excel('data.xlsx', sheet = 'RTDATA') %>%
+  
+  # Assign column named "time" to be Date value types.
   mutate(time = as.Date(time, format = "%Y-%m-%d"))
 
 ```
 
 #### Manually enter parameters shared across both models
+
+These are values that a user will be required to be manually entered through the R Shiny app each time the model is run because this value cannot be extracted from data.xlsx (at least in its current state, this could be changed) and will vary for each run of the model.
+
+These values are parameters for both the DOPD and OKPD model.
+
 
 ```{r}
 
@@ -155,19 +174,19 @@ The way the data in the RTDATA sheet is organized is easy to work with in Excel,
 
 # Create easy-to-query (i.e. "tidy" in R-speak) dataframe
 rt_data_tidy <- rt_data %>%
-  # Move row value into one column for easier querying
-  pivot_longer(cols = 3:ncol(rt_data), names_to = "Hour", values_to = "Value") %>% 
-  # Convert hourly string values to numeric
+  # Move row value from columns HE01 to the end of the dataframe (HE24) into one column named "Value"
+  pivot_longer(cols = `HE01`:ncol(rt_data), names_to = "Hour", values_to = "Value") %>% 
+  # Remove HE from Hour names and convert remaining hour number to numeric
   mutate(Hour = as.numeric(sub("^HE", "", Hour)))  %>%
   # Drop any NA values in the Hour column (These are the "Day Total" values)
   filter(!is.na(Hour))
 
 # Conditionally check to make sure rt_data_tidy has all of the needed values under the "accounts" column for the script to run. This will eliminate the need for conditional checks later on.
-# If any are missing, add them to the rt_data_tidy df and set values to 0. These will be needed later on for making calculations
+# If any are missing, add them to the rt_data_tidy df and set values to 0. These will be needed later on for making calculations.
 
 model_dependent_accounts <- c("WEL TOT CAP", "WELLS OBLIGATIONS NET SCHD", "forecast.wells.generation.min-mw", "PART_TOTAL_MAX_CAPACITY_MW-DGLS01", "PART_TOTAL_MIN_CAPACITY-DGLS01", "TOT DG LD MINUS URBN", "DG>OK LL", "DG>CHLN PAL LL", "DG>CHLN RR CEAEA", "BPA>DG PUMP", "DOPD NCW GEN", "AVA>DG LTI", "SENA>DG FRM", "INFLOW_MWH-DGLS01")
 
-# Check for missing accounts
+# Check for missing accounts and return a vector of missing accounts
 missing_accounts <- setdiff(model_dependent_accounts, rt_data_tidy$account)
 
 # Loop through missing accounts
@@ -180,7 +199,7 @@ for (account in missing_accounts) {
     Value = rep(0, times = 24)
   )
   
-  # Bind the missing data to rt_tidy_data
+  # Bind the missing account data to rt_tidy_data
   rt_data_tidy <- bind_rows(rt_data_tidy, missing_data)
 }
 
@@ -344,7 +363,9 @@ df <- df %>% mutate(`Net Load` = Load + `RRH CEAEA` + `Pumping Return` + `9Canyo
 
 # Extract Rocky Reach Inflow from RTDATA Tab
 
-rrh_inflow <- 2500 #rt_data_filter("INFLOW_MWH-DGLS01") %>% select(Value) %>% sum()
+rrh_inflow <- rt_data_filter("INFLOW_MWH-DGLS01") %>% select(Value) %>% sum()
+
+print(rrh_inflow)
 
 # Distribute RRH Gen in accordance with the following logic:
 # 1. Check if day is weekday/Saturday or Sunday/holiday. If weekday/Saturday, HL and LL will be the same value
@@ -440,6 +461,108 @@ if (day_of_week == "Sunday" | is_today_a_trading_holiday == TRUE) {
   
 }
 
-print(sum(df$`RRH Gen`))
+```
+
+#### Short Capacity? Check
+
+```{r}
+
+df <- df %>%
+  mutate(`Wells Add` = 0, `PGE SUPPLY CAPACITY` = 0) %>% 
+  mutate(`Wells Gen` = pmax(`Wells Min` + `Wells Add`, (`Net Load` + `Wells Add`) - `RRH Gen`, `Wells Add`) + `PGE SUPPLY CAPACITY`) %>% 
+  mutate(`Total Gen` = `RRH Gen` + `Wells Gen`) %>% 
+  mutate(`Wells Net Max` = `Wells Max` - (.05 * `Load`) - (.05 * (-`9Canyon` + `RRH CEAEA` - `Purchases w/o Reserves` + `Total Gen` - `PGE SUPPLY CAPACITY` * 2))) %>% 
+  mutate(`Surplus Capacity - Wells` = `Wells Net Max` - `Wells Gen`)
+
+# Conditional check for Wells surplus capacity during HL hours
+if (min(df$`Surplus Capacity - Wells`[7:22]) < 0) {
+  
+  # If there is surplus capacity, proceed with steps below
+  df <- df %>% 
+    
+    # Set PGE SUPPLY CAPACITY to lowest Surplus Capacity - Wells value during hours 7:22
+    mutate(`PGE SUPPLY CAPACITY` = ifelse(Hour >= 7 & Hour <= 22, min(`Surplus Capacity - Wells`), 0)) %>%
+    
+    # Recalculate Wells Gen with updated PGE SUPPLY CAPACITY values
+    mutate(`Wells Gen` = pmax(`Wells Min` + `Wells Add`, (`Net Load` + `Wells Add`) - `RRH Gen`, `Wells Add`) + `PGE SUPPLY CAPACITY`) %>%
+    
+    # Recalculate Total Gen to account for new Wells Gen value
+    mutate(`Total Gen` = `RRH Gen` + `Wells Gen`) %>% 
+    
+    # Recalculate Wells Net Max to account for updated Total Gen and PGE SUPPLY CAPACITY values
+    mutate(`Wells Net Max` = `Wells Max` - (.05 * `Load`) - (.05 * (-`9Canyon` + `RRH CEAEA` - `Purchases w/o Reserves` + `Total Gen` - `PGE SUPPLY CAPACITY` * 2))) %>% 
+    
+    # Recalculate Surplus Capacity - Wells
+    mutate(`Surplus Capacity - Wells` = ifelse(Hour >= 7 & Hour <= 22, `Wells Net Max` - `Wells Gen`, `Surplus Capacity - Wells`))
+  
+    # After recalculating dependents, if the min of Surplus Capacity is still less than 0, run again
+  
+    if (min(df$`Surplus Capacity - Wells`[7:22]) < 0) {
+    
+    # If there is surplus capacity, proceed with steps below
+    df <- df %>% 
+      
+      # Set PGE SUPPLY CAPACITY to lowest Surplus Capacity - Wells value during hours 7:22
+      mutate(`PGE SUPPLY CAPACITY` = ifelse(Hour >= 7 & Hour <= 22, `PGE SUPPLY CAPACITY` + min(`Surplus Capacity - Wells`), 0)) %>%
+      
+      # Recalculate Wells Gen with updated PGE SUPPLY CAPACITY values
+      mutate(`Wells Gen` = pmax(`Wells Min` + `Wells Add`, (`Net Load` + `Wells Add`) - `RRH Gen`, `Wells Add`) + `PGE SUPPLY CAPACITY`) %>%
+      
+      # Recalculate Total Gen to account for new Wells Gen value
+      mutate(`Total Gen` = `RRH Gen` + `Wells Gen`) %>% 
+      
+      # Recalculate Wells Net Max to account for updated Total Gen and PGE SUPPLY CAPACITY values
+      mutate(`Wells Net Max` = `Wells Max` - (.05 * `Load`) - (.05 * (-`9Canyon` + `RRH CEAEA` - `Purchases w/o Reserves` + `Total Gen` - `PGE SUPPLY CAPACITY` * 2))) %>% 
+      
+      # Recalculate Surplus Capacity - Wells
+      mutate(`Surplus Capacity - Wells` = ifelse(Hour >= 7 & Hour <= 22, `Wells Net Max` - `Wells Gen`, `Surplus Capacity - Wells`))
+  }
+}
+
+# Conditional check for Wells surplus capacity during HL hours
+if (min(df$`Surplus Capacity - Wells`[c(1:6, 23:24)]) < 0) {
+  
+  # If there is surplus capacity, proceed with steps below
+  df <- df %>% 
+    
+    # Set PGE SUPPLY CAPACITY to lowest Surplus Capacity - Wells value during hours 7:22
+    mutate(`PGE SUPPLY CAPACITY` = ifelse(Hour %in% c(1:6, 23:24), min(`Surplus Capacity - Wells`), 0)) %>%
+    
+    # Recalculate Wells Gen with updated PGE SUPPLY CAPACITY values
+    mutate(`Wells Gen` = pmax(`Wells Min` + `Wells Add`, (`Net Load` + `Wells Add`) - `RRH Gen`, `Wells Add`) + `PGE SUPPLY CAPACITY`) %>%
+    
+    # Recalculate Total Gen to account for new Wells Gen value
+    mutate(`Total Gen` = `RRH Gen` + `Wells Gen`) %>% 
+    
+    # Recalculate Wells Net Max to account for updated Total Gen and PGE SUPPLY CAPACITY values
+    mutate(`Wells Net Max` = `Wells Max` - (.05 * `Load`) - (.05 * (-`9Canyon` + `RRH CEAEA` - `Purchases w/o Reserves` + `Total Gen` - `PGE SUPPLY CAPACITY` * 2))) %>% 
+    
+    # Recalculate Surplus Capacity - Wells
+    mutate(`Surplus Capacity - Wells` = ifelse(Hour %in% c(1:6, 23:24), `Wells Net Max` - `Wells Gen`, `Surplus Capacity - Wells`))
+  
+    # After recalculating dependents, if the min of Surplus Capacity is still less than 0, run again
+  
+    if (min(df$`Surplus Capacity - Wells`[c(1:6, 23:24)]) < 0) {
+    
+    # If there is surplus capacity, proceed with steps below
+    df <- df %>% 
+      
+      # Set PGE SUPPLY CAPACITY to lowest Surplus Capacity - Wells value during hours 7:22
+      mutate(`PGE SUPPLY CAPACITY` = ifelse(Hour %in% c(1:6, 23:24), `PGE SUPPLY CAPACITY` + min(`Surplus Capacity - Wells`), 0)) %>%
+      
+      # Recalculate Wells Gen with updated PGE SUPPLY CAPACITY values
+      mutate(`Wells Gen` = pmax(`Wells Min` + `Wells Add`, (`Net Load` + `Wells Add`) - `RRH Gen`, `Wells Add`) + `PGE SUPPLY CAPACITY`) %>%
+      
+      # Recalculate Total Gen to account for new Wells Gen value
+      mutate(`Total Gen` = `RRH Gen` + `Wells Gen`) %>% 
+      
+      # Recalculate Wells Net Max to account for updated Total Gen and PGE SUPPLY CAPACITY values
+      mutate(`Wells Net Max` = `Wells Max` - (.05 * `Load`) - (.05 * (-`9Canyon` + `RRH CEAEA` - `Purchases w/o Reserves` + `Total Gen` - `PGE SUPPLY CAPACITY` * 2))) %>% 
+      
+      # Recalculate Surplus Capacity - Wells
+      mutate(`Surplus Capacity - Wells` = ifelse(Hour %in% c(1:6, 23:24), `Wells Net Max` - `Wells Gen`, `Surplus Capacity - Wells`))
+  }
+}
 
 ```
+
